@@ -13,6 +13,20 @@ from common.schemas import Heartbeat
 
 logger = logging.getLogger(__name__)
 
+
+def _get_local_ip() -> str:
+    """Get the LAN IP address of this machine."""
+    try:
+        # Connect to a public address to determine which interface is used
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
+
+
 ping_app = FastAPI()
 
 
@@ -22,7 +36,7 @@ async def ping():
 
 
 async def heartbeat_loop(
-    registry_url: str, machine_id: str, interval: float = 5.0
+    registry_url: str, machine_id: str, port: int, interval: float = 5.0
 ):
     specs = detect_hardware()
     logger.info("Detected hardware: %s", specs.model_dump())
@@ -33,10 +47,13 @@ async def heartbeat_loop(
             from agent.detect import detect_memory_free_gb
             specs.memory_free_gb = round(detect_memory_free_gb(), 1)
 
+            agent_address = f"http://{_get_local_ip()}:{port}"
+
             heartbeat = Heartbeat(
                 machine_id=machine_id,
                 timestamp=datetime.now(timezone.utc),
                 specs=specs,
+                agent_address=agent_address,
             )
 
             try:
@@ -57,7 +74,7 @@ async def run(registry_url: str, port: int, machine_id: str):
     server = uvicorn.Server(config)
 
     heartbeat_task = asyncio.create_task(
-        heartbeat_loop(registry_url, machine_id)
+        heartbeat_loop(registry_url, machine_id, config.port)
     )
 
     try:

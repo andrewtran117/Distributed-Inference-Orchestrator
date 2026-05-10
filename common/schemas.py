@@ -14,3 +14,4 @@ class Heartbeat(BaseModel):
     machine_id: str
     timestamp: datetime
     specs: MacSpecs
+    agent_address: str  # e.g. "http://192.168.1.10:9001"
