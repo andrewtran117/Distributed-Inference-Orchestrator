@@ -7,8 +7,11 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from common.schemas import Heartbeat
+from planner.engine import plan as compute_plan
+from planner.presets import ModelConfig, get_model_config, PRESETS
 from registry.models import MachineRecord
 from registry.pruner import prune_loop
 
@@ -82,10 +85,43 @@ async def get_machines():
     }
 
 
+class PlanRequest(BaseModel):
+    model_name: str | None = None
+    # Or provide a custom config directly:
+    num_layers: int | None = None
+    hidden_dim: int | None = None
+    precision_bytes: int | None = None
+    total_size_gb: float | None = None
+
+
 @app.post("/plan")
-async def plan():
-    # Placeholder until planner component is built
-    raise HTTPException(status_code=501, detail="Planner not implemented yet")
+async def plan_endpoint(req: PlanRequest):
+    if not machines:
+        raise HTTPException(status_code=400, detail="No machines online")
+
+    # Resolve model config from preset name or custom fields
+    if req.model_name and req.model_name in PRESETS:
+        model = get_model_config(req.model_name)
+    elif req.num_layers and req.hidden_dim and req.precision_bytes and req.total_size_gb:
+        model = ModelConfig(
+            model_name=req.model_name or "custom",
+            num_layers=req.num_layers,
+            hidden_dim=req.hidden_dim,
+            precision_bytes=req.precision_bytes,
+            total_size_gb=req.total_size_gb,
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provide a known model_name ({list(PRESETS.keys())}) or all custom fields",
+        )
+
+    try:
+        result = compute_plan(list(machines.values()), model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return result.model_dump(mode="json")
 
 
 @app.get("/health")
