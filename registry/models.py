@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from common.schemas import MacSpecs
+from common.schemas import MacSpecs, RpcStatus
 
 
 class MachineRecord(BaseModel):
@@ -11,3 +11,4 @@ class MachineRecord(BaseModel):
     agent_address: str
     last_seen: datetime
     latency_ms: float | None = None
+    rpc: RpcStatus = RpcStatus()

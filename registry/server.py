@@ -10,6 +10,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from common.schemas import Heartbeat
+from launcher.command import LlamaCppCommand
+from launcher.orchestrate import launch
 from planner.engine import plan as compute_plan
 from planner.presets import ModelConfig, get_model_config, PRESETS
 from registry.models import MachineRecord
@@ -63,6 +65,7 @@ async def heartbeat(hb: Heartbeat):
         agent_address=hb.agent_address,
         last_seen=datetime.now(timezone.utc),
         latency_ms=machines[hb.machine_id].latency_ms if not is_new else None,
+        rpc=hb.rpc,
     )
 
     if is_new:
@@ -94,16 +97,11 @@ class PlanRequest(BaseModel):
     total_size_gb: float | None = None
 
 
-@app.post("/plan")
-async def plan_endpoint(req: PlanRequest):
-    if not machines:
-        raise HTTPException(status_code=400, detail="No machines online")
-
-    # Resolve model config from preset name or custom fields
+def _resolve_model(req: PlanRequest) -> ModelConfig:
     if req.model_name and req.model_name in PRESETS:
-        model = get_model_config(req.model_name)
+        return get_model_config(req.model_name)
     elif req.num_layers and req.hidden_dim and req.precision_bytes and req.total_size_gb:
-        model = ModelConfig(
+        return ModelConfig(
             model_name=req.model_name or "custom",
             num_layers=req.num_layers,
             hidden_dim=req.hidden_dim,
@@ -116,12 +114,76 @@ async def plan_endpoint(req: PlanRequest):
             detail=f"Provide a known model_name ({list(PRESETS.keys())}) or all custom fields",
         )
 
+
+@app.post("/plan")
+async def plan_endpoint(req: PlanRequest):
+    if not machines:
+        raise HTTPException(status_code=400, detail="No machines online")
+
+    model = _resolve_model(req)
+
     try:
         result = compute_plan(list(machines.values()), model)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     return result.model_dump(mode="json")
+
+
+class LaunchRequest(BaseModel):
+    model_name: str | None = None
+    num_layers: int | None = None
+    hidden_dim: int | None = None
+    precision_bytes: int | None = None
+    total_size_gb: float | None = None
+    model_path: str  # path to .gguf file on the main node
+    rpc_port: int = 50052
+    server_host: str = "0.0.0.0"
+    server_port: int = 8080
+
+
+@app.post("/launch")
+async def launch_endpoint(req: LaunchRequest):
+    """
+    Full orchestration:
+    1. Compute optimal plan
+    2. Start rpc-server on all worker agents
+    3. Wait for readiness
+    4. Return the llama-server command
+    """
+    if not machines:
+        raise HTTPException(status_code=400, detail="No machines online")
+
+    plan_req = PlanRequest(
+        model_name=req.model_name,
+        num_layers=req.num_layers,
+        hidden_dim=req.hidden_dim,
+        precision_bytes=req.precision_bytes,
+        total_size_gb=req.total_size_gb,
+    )
+    model = _resolve_model(plan_req)
+
+    try:
+        plan_result = compute_plan(list(machines.values()), model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        command = await launch(
+            plan_result=plan_result,
+            machines=machines,
+            model_path=req.model_path,
+            rpc_port=req.rpc_port,
+            server_host=req.server_host,
+            server_port=req.server_port,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "plan": plan_result.model_dump(mode="json"),
+        "llamacpp_command": command.model_dump(),
+    }
 
 
 @app.get("/health")

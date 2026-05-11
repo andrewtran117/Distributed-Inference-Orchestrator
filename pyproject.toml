@@ -11,4 +11,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent*", "common*", "registry*", "planner*"]
+include = ["agent*", "common*", "registry*", "planner*", "launcher*"]
